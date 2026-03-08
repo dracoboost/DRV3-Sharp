@@ -24,6 +24,7 @@ internal sealed class SpcFileSelectionMenu : ISelectableMenu
         {
             List<MenuEntry> entries = new();
             entries.Add(new("Back", "", Program.PopMenu));
+            entries.Add(new("Exit", "", Program.ClearMenuStack));
 
             // Add entries for each file
             foreach (var file in spcReference.Files)

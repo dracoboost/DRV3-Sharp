@@ -25,6 +25,8 @@ internal sealed class SpcFileManipulationMenu : IMenu
         new("Rename", "Change the name of the current file.", Rename),
         new("Replace Data", "Overwrite the data for the current file with something else.", ReplaceData),
         new("Delete", "Remove the file from the archive.", Delete),
+        new("Back", "Return to the previous menu.", Program.PopMenu),
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
 
     private void DequeueFile()

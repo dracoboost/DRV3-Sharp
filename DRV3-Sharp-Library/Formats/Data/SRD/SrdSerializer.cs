@@ -1,4 +1,5 @@
-﻿using System.Buffers.Binary;
+using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -14,50 +15,32 @@ public static class SrdSerializer
 {
     public static void Deserialize(Stream inputSrd, Stream? inputSrdi, Stream? inputSrdv, out SrdData outputData)
     {
-        // Stage 1: Read through the SRD stream and deserialize all blocks.
         List<ISrdBlock> blocks = new();
         while (inputSrd.Position < inputSrd.Length)
         {
             var block = DeserializeBlock(inputSrd, inputSrdi, inputSrdv);
             if (block is not null) blocks.Add(block);
         }
-        
-        // Stage 2: Read through the block list and deserialize resources from their contents.
-        var resources = DeserializeResources(blocks);
-        
-        // (To be added later) Stage 3: Build higher-level data structures from resources,
-        // such as 3D models, etc.
-
-        outputData = new(resources);
+        outputData = new SrdData(DeserializeResources(blocks));
     }
 
     private static ISrdBlock? DeserializeBlock(Stream inputSrd, Stream? inputSrdi, Stream? inputSrdv)
     {
         using BinaryReader srdReader = new(inputSrd, Encoding.ASCII, true);
-
-        // Read block header
+        if (srdReader.BaseStream.Position + 16 > srdReader.BaseStream.Length) return null;
         string blockType = Encoding.ASCII.GetString(srdReader.ReadBytes(4));
-        int mainDataLength = BinaryPrimitives.ReverseEndianness(srdReader.ReadInt32());
-        int subDataLength = BinaryPrimitives.ReverseEndianness(srdReader.ReadInt32());
+        int mainLen = BinaryPrimitives.ReverseEndianness(srdReader.ReadInt32());
+        int subLen = BinaryPrimitives.ReverseEndianness(srdReader.ReadInt32());
         int unknown = BinaryPrimitives.ReverseEndianness(srdReader.ReadInt32());
-        Debug.Assert(unknown is 0 or 1);
-
-        // Read main data
-        MemoryStream mainDataStream = new(srdReader.ReadBytes(mainDataLength));
+        if (blockType == "$CT0") return null;
+        MemoryStream mainDataStream = new(srdReader.ReadBytes(mainLen));
         Utils.SkipToNearest(srdReader, 16);
-        
-        // Read sub-block data
-        MemoryStream? subDataStream = null;
-        if (subDataLength > 0)
-        {
-            subDataStream = new(srdReader.ReadBytes(subDataLength));
-            Utils.SkipToNearest(srdReader, 16);
-        }
+        MemoryStream? subDataStream = subLen > 0 ? new MemoryStream(srdReader.ReadBytes(subLen)) : null;
+        if (subDataStream != null) Utils.SkipToNearest(srdReader, 16);
 
-        // Read and parse main block data
         ISrdBlock? outputBlock = blockType switch
         {
-            "$CFH" => new CfhBlock(new()),
+            "$CFH" => new CfhBlock(new(), mainDataStream.ToArray()),
             "$MAT" => BlockSerializer.DeserializeMatBlock(mainDataStream),
             "$MSH" => BlockSerializer.DeserializeMshBlock(mainDataStream),
             "$RSF" => BlockSerializer.DeserializeRsfBlock(mainDataStream),
@@ -67,21 +50,15 @@ public static class SrdSerializer
             "$TXI" => BlockSerializer.DeserializeTxiBlock(mainDataStream),
             "$TXR" => BlockSerializer.DeserializeTxrBlock(mainDataStream),
             "$VTX" => BlockSerializer.DeserializeVtxBlock(mainDataStream),
-            "$CT0" => null,
             _ => BlockSerializer.DeserializeUnknownBlock(blockType, mainDataStream),
         };
-        
-        // If there is any sub-block data, parse it too.
-        while (subDataStream is not null && subDataStream.Position < subDataLength)
+
+        while (subDataStream != null && subDataStream.Position < subLen)
         {
             var subBlock = DeserializeBlock(subDataStream, inputSrdi, inputSrdv);
-            if (subBlock is not null) outputBlock?.SubBlocks.Add(subBlock);
+            if (subBlock != null) outputBlock?.SubBlocks.Add(subBlock);
         }
-        
-        // Clean up
-        subDataStream?.Dispose();
-        mainDataStream.Dispose();
-
+        subDataStream?.Dispose(); mainDataStream.Dispose();
         return outputBlock;
     }
 
@@ -90,7 +67,7 @@ public static class SrdSerializer
         List<ISrdResource> outputResources = new();
         foreach (var block in inputBlocks)
         {
-            ISrdResource resource = block switch
+            outputResources.Add(block switch
             {
                 MatBlock mat => ResourceSerializer.DeserializeMaterial(mat),
                 MshBlock msh => ResourceSerializer.DeserializeMesh(msh),
@@ -100,120 +77,72 @@ public static class SrdSerializer
                 TxrBlock txr => ResourceSerializer.DeserializeTexture(txr),
                 VtxBlock vtx => ResourceSerializer.DeserializeVertex(vtx),
                 _ => ResourceSerializer.DeserializeUnknown(block)
-            };
-            outputResources.Add(resource);
+            });
         }
-
         return outputResources;
     }
 
     public static void Serialize(SrdData inputData, Stream outputSrd, Stream outputSrdi, Stream outputSrdv)
     {
-        // Pass 1: Serialize resources into blocks
+        Console.WriteLine($"Starting SRD serialization. Resource count: {inputData.Resources.Count}");
         var blocks = SerializeResources(inputData);
-        
-        // Pass 2: Serialize blocks into data and raw binary chunks.
-        // Remember to check if outputSrdi and outputSrdv exist for each block,
-        // and create it if it is needed and doesn't already exist.
-        foreach (var block in blocks)
-        {
-            SerializeBlock(block, outputSrd, outputSrdi, outputSrdv);
-        }
-        // Finally add one last terminator block
+        Console.WriteLine($"Serialized into {blocks.Count} blocks.");
+        foreach (var block in blocks) SerializeBlock(block, outputSrd, outputSrdi, outputSrdv);
         outputSrd.Write(BlockSerializer.GetTerminatorBlockBytes());
-        Utils.PadToNearest(new(outputSrd, Encoding.ASCII, true), 16);
+        Utils.PadToNearest(new BinaryWriter(outputSrd, Encoding.ASCII, true), 16);
+        Console.WriteLine($"Final SRD length: {outputSrd.Length} bytes.");
     }
 
     private static void SerializeBlock(ISrdBlock block, Stream outputSrd, Stream outputSrdi, Stream outputSrdv)
     {
-        // Setup memory stream for serialized main data
         MemoryStream mainDataStream = new();
         string typeString = "";
         int unknownVal = 0;
 
         switch (block)
         {
-            // Serialize data based on block type
-            case UnknownBlock unk:
-                typeString = unk.BlockType;
-                mainDataStream.Write(BlockSerializer.SerializeUnknownBlock(unk));
-                break;
-            case CfhBlock:
-                typeString = "$CFH";
-                unknownVal = 1;
-                break;
-            case RsfBlock rsf:
-                typeString = "$RSF";
-                mainDataStream.Write(BlockSerializer.SerializeRsfBlock(rsf));
-                break;
-            case RsiBlock rsi:
-                typeString = "$RSI";
-                var results = BlockSerializer.SerializeRsiBlock(rsi);
-                mainDataStream.Write(results.main);
-                outputSrdi.Write(results.srdi);
-                outputSrdv.Write(results.srdv);
-                break;
-            case TxrBlock txr:
-                typeString = "$TXR";
-                mainDataStream.Write(BlockSerializer.SerializeTxrBlock(txr));
-                break;
+            case CfhBlock cfh: typeString = "$CFH"; unknownVal = 1; mainDataStream.Write(cfh.MainData); break;
+            case RsfBlock rsf: typeString = "$RSF"; mainDataStream.Write(rsf.MainData); break;
+            case RsiBlock rsi: typeString = "$RSI"; mainDataStream.Write(BlockSerializer.SerializeRsiBlock(rsi, outputSrdi, outputSrdv)); break;
+            case TxrBlock txr: typeString = "$TXR"; mainDataStream.Write(BlockSerializer.SerializeTxrBlock(txr)); break;
+            case VtxBlock vtx: typeString = "$VTX"; mainDataStream.Write(vtx.MainData); break;
+            case MshBlock msh: typeString = "$MSH"; mainDataStream.Write(msh.MainData); break;
+            case ScnBlock scn: typeString = "$SCN"; mainDataStream.Write(scn.MainData); break;
+            case TreBlock tre: typeString = "$TRE"; mainDataStream.Write(tre.MainData); break;
+            case MatBlock mat: typeString = "$MAT"; mainDataStream.Write(mat.MainData); break;
+            case TxiBlock txi: typeString = "$TXI"; mainDataStream.Write(txi.MainData); break;
+            case UnknownBlock unk: typeString = unk.BlockType; mainDataStream.Write(unk.MainData); break;
         }
-        
-        
-        // Serialize sub-blocks
+
         MemoryStream subDataStream = new();
-        foreach (var subBlock in block.SubBlocks)
-        {
-            SerializeBlock(subBlock, subDataStream, outputSrdi, outputSrdv);
-        }
-        // Append data for CT0 terminator block if there were any sub-blocks
+        foreach (var subBlock in block.SubBlocks) SerializeBlock(subBlock, subDataStream, outputSrdi, outputSrdv);
         if (block.SubBlocks.Count > 0) subDataStream.Write(BlockSerializer.GetTerminatorBlockBytes());
-        
 
-        // Sanity checks
-        Debug.Assert(typeString.Length == 4);   // The block type magic string must be exactly 4 characters
+        if (string.IsNullOrEmpty(typeString)) return;
 
-        // Write actual data to the SRD file, or the subdata stream if this is a nested call.
-        // Write block header
         using BinaryWriter srdWriter = new(outputSrd, Encoding.ASCII, true);
         srdWriter.Write(Encoding.ASCII.GetBytes(typeString));
         srdWriter.Write(BinaryPrimitives.ReverseEndianness((int)mainDataStream.Length));
         srdWriter.Write(BinaryPrimitives.ReverseEndianness((int)subDataStream.Length));
         srdWriter.Write(BinaryPrimitives.ReverseEndianness(unknownVal));
-
-        // Write main block data
         srdWriter.Write(mainDataStream.ToArray());
         Utils.PadToNearest(srdWriter, 16);
-
-        // Write sub block data, if it exists
-        if (subDataStream.Length > 0)
-        {
-            srdWriter.Write(subDataStream.ToArray());
-            Utils.PadToNearest(srdWriter, 16);
-        }
-
-        // Dispose of our memory streams
-        subDataStream.Dispose();
-        mainDataStream.Dispose();
+        if (subDataStream.Length > 0) { srdWriter.Write(subDataStream.ToArray()); Utils.PadToNearest(srdWriter, 16); }
+        
+        Console.WriteLine($"Wrote block {typeString} (Main: {mainDataStream.Length}, Sub: {subDataStream.Length})");
+        subDataStream.Dispose(); mainDataStream.Dispose();
     }
 
     private static List<ISrdBlock> SerializeResources(SrdData inputData)
     {
         List<ISrdBlock> outputBlocks = new();
-
         foreach (var resource in inputData.Resources)
         {
-            switch (resource)
-            {
-                case UnknownResource unknown:
-                    outputBlocks.Add(ResourceSerializer.SerializeUnknown(unknown));
-                    break;
-                case TextureResource texture:
-                    outputBlocks.Add(ResourceSerializer.SerializeTexture(texture));
-                    break;
-            }
+            if (resource is TextureResource texture && texture.UnderlyingBlock == null)
+                outputBlocks.Add(ResourceSerializer.SerializeTexture(texture));
+            else if (resource.UnderlyingBlock != null)
+                outputBlocks.Add(resource.UnderlyingBlock);
         }
-
         return outputBlocks;
     }
 }

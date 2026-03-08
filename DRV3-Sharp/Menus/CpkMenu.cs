@@ -13,7 +13,8 @@ internal sealed class CpkMenu : IMenu
     {
         new("Extract CPK", "Extract the entire contents of a specified CPK archive.", Extract),
         new("Help", "View descriptions of currently-available operations.", Help),
-        new("Back", "Return to the previous menu.", Program.PopMenu)
+        new("Back", "Return to the previous menu.", Program.PopMenu),
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
 
     private static void Extract()

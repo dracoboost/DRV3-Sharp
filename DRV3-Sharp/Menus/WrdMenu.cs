@@ -19,7 +19,8 @@ internal sealed class WrdMenu : IMenu
         new("Export", "Batch export an SPC archive of WRD scripts, alongside accompanying text data.", Export),
         new("Import", "Batch import a folder of exported scripts and generate archives for WRD scripts and STX text.", Import),
         new("Help", "View descriptions of currently-available operations.", Help),
-        new("Back", "Return to the previous menu.", Program.PopMenu)
+        new("Back", "Return to the previous menu.", Program.PopMenu),
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
 
     private static void Export()

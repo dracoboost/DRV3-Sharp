@@ -18,7 +18,8 @@ internal sealed class StxMenu : IMenu
         new("STX to JSON", "Convert STX file(s) to JSON format for editing.", ToJson),
         new("JSON to STX", "Convert JSON file(s) to STX format for use in the game.", ToStx),
         new("Help", "View descriptions of currently-available operations.", Help),
-        new("Back", "Return to the previous menu.", Program.PopMenu)
+        new("Back", "Return to the previous menu.", Program.PopMenu),
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
 
     private static void ToJson()

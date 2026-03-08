@@ -13,7 +13,8 @@ internal sealed class SelectFileTypeMenu : IMenu
         new("SFL", "The primary animation/2D cutscene format. Still largely unknown.", SFL),
         new("WRD", "The primary script format, used to control game behavior, map transitions, text displays, and more.", WRD),
         new("Help", "View descriptions of currently-available operations.", Help),
-        new("Back", "Return to the previous menu.", Program.PopMenu)
+        new("Back", "Return to the previous menu.", Program.PopMenu),
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
 
     private static void SPC()

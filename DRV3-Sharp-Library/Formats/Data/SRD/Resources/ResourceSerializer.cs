@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -12,10 +12,13 @@ using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.Formats.Tga;
 using SixLabors.ImageSharp.PixelFormats;
 using ScarletImage = Scarlet.Drawing.ImageBinary;   // Alias the Scarlet library's ImageBinary class
+using BCnEncoder.Encoder;
+using BCnEncoder.Shared;
+using BCnEncoder.ImageSharp;
 
 namespace DRV3_Sharp_Library.Formats.Data.SRD.Resources;
 
-internal static class ResourceSerializer
+public static class ResourceSerializer
 {
     public static UnknownResource DeserializeUnknown(ISrdBlock block)
     {
@@ -36,7 +39,7 @@ internal static class ResourceSerializer
         var materialProperties = rsi.LocalResources;
         var shaderReferences = rsi.ResourceStrings.GetRange(1, rsi.ResourceStrings.Count - 1);
 
-        return new MaterialResource(name, shaderReferences, mat.MapTexturePairs, materialProperties);
+        return new MaterialResource(name, shaderReferences, mat.MapTexturePairs, materialProperties, mat);
     }
 
     public static MeshResource DeserializeMesh(MshBlock msh)
@@ -46,7 +49,7 @@ internal static class ResourceSerializer
             throw new InvalidDataException("A MSH block within the SRD file did not have its expected RSI sub-block.");
 
         string meshName = rsi.ResourceStrings[0];
-        return new MeshResource(meshName, msh.LinkedVertexName, msh.LinkedMaterialName, msh.Strings, msh.MappedNodes);
+        return new MeshResource(meshName, msh.LinkedVertexName, msh.LinkedMaterialName, msh.Strings, msh.MappedNodes, msh);
     }
 
     public static SceneResource DeserializeScene(ScnBlock scn)
@@ -57,7 +60,7 @@ internal static class ResourceSerializer
 
         string name = rsi.ResourceStrings[0];
 
-        return new SceneResource(name, scn.LinkedTreeNames, scn.UnknownStrings);
+        return new SceneResource(name, scn.LinkedTreeNames, scn.UnknownStrings, scn);
     }
 
     public static TreeResource DeserializeTree(TreBlock tre)
@@ -67,10 +70,8 @@ internal static class ResourceSerializer
             throw new InvalidDataException("A TRE block within the SRD file did not have its expected RSI sub-block.");
 
         string name = rsi.ResourceStrings[0];
-        // TODO: Copy over the LocalResources in the RSI block, it contains info
-        // about the tree and its associated geometry/materials.
 
-        return new TreeResource(name, tre.RootNode, tre.UnknownMatrix, rsi.LocalResources);
+        return new TreeResource(name, tre.RootNode, tre.UnknownMatrix, rsi.LocalResources, tre);
     }
 
     public static TextureInstanceResource DeserializeTextureInstance(TxiBlock txi)
@@ -81,15 +82,15 @@ internal static class ResourceSerializer
 
         string linkedMaterialName = rsi.ResourceStrings[0];
 
-        return new TextureInstanceResource(txi.LinkedTextureName, linkedMaterialName);
+        return new TextureInstanceResource(txi.LinkedTextureName, linkedMaterialName, txi);
     }
-    
+
     public static TextureResource DeserializeTexture(TxrBlock txr)
     {
         // The RSI sub-block is critical because it contains the raw image data.
         if (txr.SubBlocks[0] is not RsiBlock rsi)
             throw new InvalidDataException("A TXR block within the SRD file did not have its expected RSI sub-block.");
-        
+
         string outputName = rsi.ResourceStrings[0];
         Console.WriteLine($"Found texture resource {outputName}");
 
@@ -101,19 +102,19 @@ internal static class ResourceSerializer
             "png" => new(new PngConfigurationModule()),
             _ => new(new BmpConfigurationModule())
         };
-        
+
         // Separate the palette data from the list beforehand if it exists
         byte[]? paletteData = null;
         if (txr.Palette == 1)
         {
             var paletteInfo = rsi.ExternalResources[txr.PaletteID];
-            rsi.ExternalResources.Remove(paletteInfo);
             paletteData = paletteInfo.Data;
         }
-        
+
         // Read image data/mipmaps
         List<Image<Rgba32>> outputImages = new();
-        for (var m = 0; m < rsi.ExternalResources.Count; ++m)
+        int mipmapStartOffset = (txr.Palette == 1) ? 1 : 0;
+        for (var m = mipmapStartOffset; m < rsi.ExternalResources.Count; ++m)
         {
             var imageResourceInfo = rsi.ExternalResources[m];
             var imageRawData = imageResourceInfo.Data;
@@ -125,12 +126,11 @@ internal static class ResourceSerializer
                 sourceWidth = Utils.PowerOfTwo(sourceWidth);
                 sourceHeight = Utils.PowerOfTwo(sourceHeight);
             }
-            
-            // Calculate mipmap dimensions for this mipmap level, "m".
-            // If 0, it's the full-size image, but we use the same logic anyway.
-            int mipWidth = (int)Math.Max(1, sourceWidth / Math.Pow(2, m));
-            int mipHeight = (int)Math.Max(1, sourceHeight / Math.Pow(2, m));
-            
+
+            int mipIdx = m - mipmapStartOffset;
+            int mipWidth = Math.Max(1, sourceWidth >> mipIdx);
+            int mipHeight = Math.Max(1, sourceHeight >> mipIdx);
+
             // Determine the source pixel format.
             var pixelFormat = txr.Format switch
             {
@@ -139,168 +139,201 @@ internal static class ResourceSerializer
                 TextureFormat.BGRA4444 => PixelDataFormat.FormatBgra4444,
                 TextureFormat.DXT1RGB => PixelDataFormat.FormatDXT1Rgb,
                 TextureFormat.DXT5 => PixelDataFormat.FormatDXT5,
-                TextureFormat.BC5 =>  PixelDataFormat.FormatRGTC2,  // RGTC2 / BC5
-                TextureFormat.BC4 => PixelDataFormat.FormatRGTC1,   // RGTC1 / BC4
+                TextureFormat.BC5 => PixelDataFormat.FormatRGTC2,
+                TextureFormat.BC4 => PixelDataFormat.FormatRGTC1,
                 TextureFormat.Indexed8 => PixelDataFormat.FormatIndexed8,
                 TextureFormat.BPTC => PixelDataFormat.FormatBPTC,
                 _ => PixelDataFormat.Undefined
             };
-            
-            // Handle console-specific image data swizzling... later, when we understand it better.
-            /*
-            switch (txr.Swizzle)
-            {
-                // Swizzling?
-                case 0:
-                case 2:
-                case 6:
-                    //Console.WriteLine("WARNING: This texture is swizzled, meaning it likely came from a console version of the game. These are not supported.");
-                    try
-                    {
-                        // TODO: blockSize is a placeholder and does not work with all images.
-                        // It seems to be based on the input texture type:
-                        // https://gbatemp.net/threads/is-there-any-tool-to-unswizzle-textures-from-switch-games.609228/post-9774349
-                        imageRawData = ResourceUtils.PS4UnSwizzle(imageRawData, mipWidth, mipHeight, 8).ToArray();
-                    }
-                    catch (Exception)
-                    {
-                        Console.WriteLine("Error de-swizzling texture, block size is probably wrong!");
-                    }
 
-                    break;
-                
-                // No swizzling?
-                case 1: 
-                    break;
-
-                default:
-                    Console.WriteLine($"WARNING: Unknown swizzle type {txr.Swizzle}.");
-                    Console.WriteLine("Press ENTER to continue...");
-                    Console.ReadLine();
-                    break;
-            }
-            */
-            
-            // Use Scarlet to convert the raw pixel data into something we can actually use.
-            ScarletImage scarletImageBinary = new(mipWidth, mipHeight, pixelFormat, imageRawData);
-            var convertedPixelData = new ReadOnlySpan<byte>(scarletImageBinary.GetOutputPixelData(0));
-            Image<Rgba32> currentMipmap = new(config, mipWidth, mipHeight);
-            for (var y = 0; y < mipHeight; ++y)
+            // Unswizzle if necessary (Even flags use dynamic Morton swizzling on PC)
+            if ((txr.Swizzle & 1) == 0)
             {
-                for (var x = 0; x < mipWidth; ++x)
+                int blockSize = pixelFormat switch
                 {
-                    // Get the color data from either the palette or direct data.
-                    Rgba32 pixelColor;
+                    PixelDataFormat.FormatDXT1Rgb => 8,
+                    PixelDataFormat.FormatRGTC1 => 8,
+                    PixelDataFormat.FormatArgb8888 => 64,
+                    _ => 16
+                };
+
+                if (pixelFormat != PixelDataFormat.FormatArgb8888)
+                {
+                    // For BC formats, Morton swizzle operates on 4x4 blocks
+                    if (mipWidth >= 4 && mipHeight >= 4)
+                    {
+                        imageRawData = ResourceUtils.PostProcessMortonUnswizzle(imageRawData, mipWidth / 4, mipHeight / 4, blockSize).ToArray();
+                    }
+                }
+                else
+                {
+                    // ARGB8888 uses per-pixel bytes
+                    imageRawData = ResourceUtils.PostProcessMortonUnswizzle(imageRawData, mipWidth, mipHeight, 4).ToArray();
+                }
+            }
+
+            ScarletImage scarletImageBinary = new(mipWidth, mipHeight, pixelFormat, imageRawData);
+            byte[] decompressedData = scarletImageBinary.GetOutputPixelData(0);
+            var convertedPixelData = new ReadOnlySpan<byte>(decompressedData);
+
+            int currentDisplayWidth = Math.Max(1, txr.Width >> mipIdx);
+            int currentDisplayHeight = Math.Max(1, txr.Height >> mipIdx);
+
+            Image<Rgba32> currentMipmap = new(config, currentDisplayWidth, currentDisplayHeight);
+            for (var y = 0; y < currentDisplayHeight; ++y)
+            {
+                for (var x = 0; x < currentDisplayWidth; ++x)
+                {
+                    Rgba32 pixelColor = new();
                     if (pixelFormat == PixelDataFormat.FormatIndexed8)
                     {
                         if (paletteData is null)
-                            throw new NullReferenceException(
-                                "Texture was indicated as using a palette, but the palette data was null.");
-                        
-                        int pixelDataOffset = (y * mipWidth) + x;
+                            throw new NullReferenceException("Texture was indicated as using a palette, but the palette data was null.");
 
-                        // Apply the previously-loaded palette
-                        int paletteDataOffset = convertedPixelData[pixelDataOffset];
-                        pixelColor.B = paletteData[paletteDataOffset + 0];
-                        pixelColor.G = paletteData[paletteDataOffset + 1];
-                        pixelColor.R = paletteData[paletteDataOffset + 2];
-                        pixelColor.A = paletteData[paletteDataOffset + 3];
+                        int pixelDataOffset = (y * mipWidth) + x;
+                        if (pixelDataOffset < convertedPixelData.Length)
+                        {
+                            int paletteIndex = convertedPixelData[pixelDataOffset];
+                            int paletteDataOffset = paletteIndex * 4;
+                            if (paletteDataOffset + 3 < paletteData.Length)
+                            {
+                                pixelColor.B = paletteData[paletteDataOffset + 0];
+                                pixelColor.G = paletteData[paletteDataOffset + 1];
+                                pixelColor.R = paletteData[paletteDataOffset + 2];
+                                pixelColor.A = paletteData[paletteDataOffset + 3];
+                            }
+                        }
                     }
                     else
                     {
-                        int pixelDataOffset = ((y * mipWidth) + x) * 4;
-
-                        var pixelBytes = convertedPixelData[pixelDataOffset..(pixelDataOffset + 4)];
-                        pixelColor.B = pixelBytes[0];
-                        pixelColor.G = pixelBytes[1];
-                        pixelColor.R = pixelBytes[2];
-                        pixelColor.A = pixelBytes[3];
-
-                        // Perform fixups depending on the output data format.
-                        // BC5 and BC4 are two-channel and one-channel formats respectively,
-                        // so we need to imply the remaining color and alpha channels' data.
-                        if (pixelFormat == PixelDataFormat.FormatRGTC2)         // BC5
+                        int byteOffset = ((y * mipWidth) + x) * 4;
+                        if (byteOffset + 3 < convertedPixelData.Length)
                         {
-                            // Set missing channels to maximum value since this
-                            // format is only used for normal map textures.
-                            pixelColor.B = 255;
-                            pixelColor.A = 255;
+                            pixelColor.B = convertedPixelData[byteOffset + 0];
+                            pixelColor.G = convertedPixelData[byteOffset + 1];
+                            pixelColor.R = convertedPixelData[byteOffset + 2];
+                            pixelColor.A = convertedPixelData[byteOffset + 3];
                         }
-                        else if (pixelFormat == PixelDataFormat.FormatRGTC1)    // BC4
-                        {
-                            // Export as grayscale instead of just R, G, or B.
-                            pixelColor.G = pixelColor.R;
-                            pixelColor.B = pixelColor.R;
-                            //pixelColor.A = pixelColor.R;
-                        }
+
+                        if (pixelFormat == PixelDataFormat.FormatRGTC2) { pixelColor.B = 255; pixelColor.A = 255; }
+                        else if (pixelFormat == PixelDataFormat.FormatRGTC1) { pixelColor.G = pixelColor.R; pixelColor.B = pixelColor.R; }
                     }
-
-                    // Assign that color to the appropriate pixel on the output image.
                     currentMipmap[x, y] = pixelColor;
                 }
             }
-            
             outputImages.Add(currentMipmap);
         }
-        
-        return new TextureResource(outputName, outputImages);
+
+        return new TextureResource(outputName, outputImages, txr.Format, txr.Unknown00, txr.Unknown0D, txr.Swizzle, rsi.Unknown00, rsi.Unknown01, rsi.Unknown02, rsi.Unknown06, txr);
     }
+
+    public static TextureResource ImportTexture(string name, Stream inputStream)
+    {
+        var image = Image.Load<Rgba32>(inputStream);
+        return new TextureResource(name, new List<Image<Rgba32>> { image });
+    }
+
     public static TxrBlock SerializeTexture(TextureResource texture)
     {
-        // First, convert the texture(s) from ImageSharp format to Scarlet
-        // so we can compress it to a Direct3D compatible byte format.
         List<byte[]> convertedPixelBytes = new();
+        CompressionFormat compressionFormat = texture.Format switch
+        {
+            TextureFormat.DXT1RGB => CompressionFormat.Bc1,
+            TextureFormat.DXT5 => CompressionFormat.Bc3,
+            TextureFormat.BC4 => CompressionFormat.Bc4,
+            TextureFormat.BC5 => CompressionFormat.Bc5,
+            TextureFormat.BPTC => CompressionFormat.Bc7,
+            _ => CompressionFormat.Unknown
+        };
+
         foreach (var mipmap in texture.ImageMipmaps)
         {
-            // ImageSharp pixel data is stored as ARGB little-endian (alpha being MSB, blue being LSB).
-            var numBytes = 4 * mipmap.Height * mipmap.Width;
-            var pixelData = new byte[numBytes];
-
-            for (var y = 0; y < mipmap.Height; ++y)
+            if (compressionFormat != CompressionFormat.Unknown)
             {
-                for (var x = 0; x < mipmap.Width; ++x)
-                {
-                    int byteOffset = 4 * ((y * mipmap.Width) + x);
+                BcEncoder encoder = new();
+                encoder.OutputOptions.Format = compressionFormat;
+                encoder.OutputOptions.Quality = CompressionQuality.Balanced;
 
-                    pixelData[byteOffset + 0] = mipmap.Frames[0][x, y].B;
-                    pixelData[byteOffset + 1] = mipmap.Frames[0][x, y].G;
-                    pixelData[byteOffset + 2] = mipmap.Frames[0][x, y].R;
-                    pixelData[byteOffset + 3] = mipmap.Frames[0][x, y].A;
+                using MemoryStream ms = new();
+                encoder.EncodeToStream(mipmap, ms);
+                convertedPixelBytes.Add(ms.ToArray());
+            }
+            else
+            {
+                var numBytes = 4 * mipmap.Height * mipmap.Width;
+                var pixelData = new byte[numBytes];
+                for (var y = 0; y < mipmap.Height; ++y)
+                {
+                    for (var x = 0; x < mipmap.Width; ++x)
+                    {
+                        int byteOffset = 4 * ((y * mipmap.Width) + x);
+                        var pixel = mipmap[x, y];
+                        pixelData[byteOffset + 0] = pixel.B;
+                        pixelData[byteOffset + 1] = pixel.G;
+                        pixelData[byteOffset + 2] = pixel.R;
+                        pixelData[byteOffset + 3] = pixel.A;
+                    }
+                }
+
+                ScarletImage scarletImageBinary = new(mipmap.Width, mipmap.Height, PixelDataFormat.FormatArgb8888,
+                    Endian.LittleEndian, PixelDataFormat.FormatArgb8888, Endian.LittleEndian, pixelData);
+
+                convertedPixelBytes.Add(scarletImageBinary.GetOutputPixelData(0));
+            }
+
+            // Apply swizzling if needed (Even flags use dynamic Morton swizzling on PC)
+            if ((texture.Swizzle & 1) == 0)
+            {
+                var currentData = convertedPixelBytes.Last();
+                int blockSize = texture.Format switch
+                {
+                    TextureFormat.DXT1RGB => 8,
+                    TextureFormat.BC4 => 8,
+                    TextureFormat.ARGB8888 => 64,
+                    _ => 16
+                };
+
+                if (texture.Format != TextureFormat.ARGB8888)
+                {
+                    if (mipmap.Width >= 4 && mipmap.Height >= 4)
+                    {
+                        convertedPixelBytes[convertedPixelBytes.Count - 1] = ResourceUtils.PostProcessMortonSwizzle(currentData, mipmap.Width / 4, mipmap.Height / 4, blockSize).ToArray();
+                    }
+                }
+                else
+                {
+                    convertedPixelBytes[convertedPixelBytes.Count - 1] = ResourceUtils.PostProcessMortonSwizzle(currentData, mipmap.Width, mipmap.Height, 4).ToArray();
                 }
             }
-            
-            // Now, convert the pixel data to a ScarletImage and get the output bytes.
-            ScarletImage scarletImageBinary = new(mipmap.Width, mipmap.Height, PixelDataFormat.FormatArgb8888,
-                Endian.LittleEndian, PixelDataFormat.FormatBPTC, Endian.LittleEndian, pixelData);
-
-            var convertedData = scarletImageBinary.GetOutputPixelData(0);
-            convertedPixelBytes.Add(convertedData);
         }
-        
-        // Now, generate the TXR and RSI block data based on this info.
-        var mipmapResources = convertedPixelBytes.Select(mipmapData => new ExternalResource(ResourceDataLocation.Srdv, mipmapData, 0, -1)).ToList();
 
-        RsiBlock rsi = new(6, 5, 4, -1, new(), mipmapResources,
-            new() { texture.Name },new(), new());
-        TxrBlock txr = new(8, 28, 1, (ushort)texture.ImageMipmaps[0].Width, (ushort)texture.ImageMipmaps[0].Height,
-            1024, TextureFormat.BPTC, 0, 0, new() { rsi });
+        var mipmapResources = convertedPixelBytes.Select(mipmapData => new ExternalResource(ResourceDataLocation.Srdv, mipmapData, 0, -1)).ToList();
+        RsiBlock rsi = new(texture.RsiUnknown00, texture.RsiUnknown01, texture.RsiUnknown02, texture.RsiUnknown06, new(), mipmapResources, new() { texture.Name }, new(), new(), Array.Empty<byte>());
+        
+        // Scanline calculation based on observed PC version patterns
+        ushort scanline = (ushort)texture.ImageMipmaps[0].Width;
+        if (texture.Format == TextureFormat.DXT1RGB || texture.Format == TextureFormat.BC4) 
+            scanline *= 2;
+        else 
+            scanline *= 4; // DXT5, BC5, BPTC, and ARGB8888 all use Width * 4 in the observed PC SRD files
+
+        TxrBlock txr = new(texture.TxrUnknown00, texture.TxrUnknown0D, texture.Swizzle, (ushort)texture.ImageMipmaps[0].Width, (ushort)texture.ImageMipmaps[0].Height,
+            scanline, texture.Format, 0, 0, new() { rsi }, Array.Empty<byte>());
 
         return txr;
     }
 
     public static VertexResource DeserializeVertex(VtxBlock vtx)
     {
-        // The RSI sub-block is critical because it contains the geometry and index data.
         if (vtx.SubBlocks[0] is not RsiBlock rsi)
             throw new InvalidDataException("A VTX block within the SRD file did not have its expected RSI sub-block.");
 
         string name = rsi.ResourceStrings[0];
         Console.WriteLine($"Found vertex resource {name}");
-        
+
         using MemoryStream geometryStream = new(rsi.ExternalResources[0].Data);
         using BinaryReader geometryReader = new(geometryStream);
 
-        // Read data from each geometry section
         List<Vector3> vertices = new();
         List<Vector3> normals = new();
         List<Vector2> textureCoords = new();
@@ -315,88 +348,35 @@ internal static class ResourceSerializer
                 var thisVertexDataStart = geometryStream.Position;
                 switch (sectionNum)
                 {
-                    // Vertex and Normal data (and Texture coordinates for boneless models?)
                     case 0:
-                    {
-                        Vector3 vertex = new()
-                        {
-                            X = geometryReader.ReadSingle() * -1.0f,
-                            Y = geometryReader.ReadSingle(),
-                            Z = geometryReader.ReadSingle()
-                        };
-                        vertices.Add(vertex);
-
-                        Vector3 normal = new()
-                        {
-                            X = geometryReader.ReadSingle() * -1.0f,
-                            Y = geometryReader.ReadSingle(),
-                            Z = geometryReader.ReadSingle()
-                        };
-                        normals.Add(normal);
-
-                        if (vtx.VertexSectionInfo.Count == 1)
-                        {
-                            Vector2 textureCoord = new()
-                            {
-                                X = geometryReader.ReadSingle(),
-                                Y = geometryReader.ReadSingle()
-                            };
-                            textureCoords.Add(textureCoord);
-                        }
-
+                        vertices.Add(new Vector3 { X = geometryReader.ReadSingle() * -1.0f, Y = geometryReader.ReadSingle(), Z = geometryReader.ReadSingle() });
+                        normals.Add(new Vector3 { X = geometryReader.ReadSingle() * -1.0f, Y = geometryReader.ReadSingle(), Z = geometryReader.ReadSingle() });
+                        if (vtx.VertexSectionInfo.Count == 1) textureCoords.Add(new Vector2 { X = geometryReader.ReadSingle(), Y = geometryReader.ReadSingle() });
                         break;
-                    }
-                    // Bone weights?
                     case 1:
-                    {
                         var weightsPerVertex = (sectionInfo.DataSizePerVertex / sizeof(float));
-                        for (var weightNum = 0; weightNum < weightsPerVertex; ++weightNum)
-                        {
-                            weights.Add(geometryReader.ReadSingle());
-                        }
-
+                        for (var weightNum = 0; weightNum < weightsPerVertex; ++weightNum) weights.Add(geometryReader.ReadSingle());
                         break;
-                    }
-                    // Texture coordinates (only for models with bones?)
                     case 2:
-                    {
-                        Vector2 textureCoord = new()
-                        {
-                            X = geometryReader.ReadSingle(),
-                            Y = geometryReader.ReadSingle()
-                        };
-                        textureCoords.Add(textureCoord);
+                        textureCoords.Add(new Vector2 { X = geometryReader.ReadSingle(), Y = geometryReader.ReadSingle() });
                         break;
-                    }
-                    default:
-                        throw new InvalidDataException($"Unknown geometry data section index {sectionNum}.");
                 }
-            
-                // Skip data we don't currently use, though I may add support for this data later
                 var remainingBytes = sectionInfo.DataSizePerVertex - (geometryStream.Position - thisVertexDataStart);
-                //Console.WriteLine($"Skipping {remainingBytes} unknown bytes for this vertex.");
                 geometryStream.Seek(remainingBytes, SeekOrigin.Current);
             }
         }
-        
-        // Read index data
+
         using MemoryStream indexStream = new(rsi.ExternalResources[1].Data);
         using BinaryReader indexReader = new(indexStream);
         List<Tuple<ushort, ushort, ushort>> indices = new();
         while (indexStream.Position < indexStream.Length)
         {
-            // We need to reverse the order of the indices to prevent the normals
-            // from becoming permanently flipped due to the clockwise/counter-clockwise
-            // order of the indices determining the face's direction.
             ushort index3 = indexReader.ReadUInt16();
             ushort index2 = indexReader.ReadUInt16();
             ushort index1 = indexReader.ReadUInt16();
-            
-            Tuple<ushort, ushort, ushort> indexTriplet = new(index1, index2, index3);
-            indices.Add(indexTriplet);
+            indices.Add(new Tuple<ushort, ushort, ushort>(index1, index2, index3));
         }
-        
 
-        return new VertexResource(name, vertices, normals, textureCoords, indices, vtx.BoneList, weights);
+        return new VertexResource(name, vertices, normals, textureCoords, indices, vtx.BoneList, weights, vtx);
     }
 }

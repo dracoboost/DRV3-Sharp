@@ -13,12 +13,12 @@ internal static class Utils
 
         string? input = Console.ReadLine();
         if (string.IsNullOrWhiteSpace(input)) return null;
-        
+
         // Use regex to match quoted paths and then split any unquoted paths by space.
         // For a breakdown of this regex: https://regex101.com/r/tqKFpz/2
         Regex pathRegex = new(@"""(.*?)""|'(.*?)'", RegexOptions.Singleline);
         var matches = pathRegex.Matches(input);
-        
+
         // Add the quoted matches to the list of strings
         List<string> foundPaths = new();
         foreach (Match m in matches)
@@ -26,26 +26,26 @@ internal static class Utils
             if (string.IsNullOrWhiteSpace(m.Value)) continue;
             foundPaths.Add(m.Value);
         }
-        
+
         // Now that we've found all quoted matches, remove them from the string
         // to isolate any remaining unquoted paths.
         foreach (string s in foundPaths)
         {
             input = input.Replace(s, "");
         }
-        
+
         // Trim any leading or trailing whitespace, then add
         // all remaining string segments, split by spaces.
         input = input.Trim(' ');
         foundPaths.AddRange(input.Split());
-        
+
         // Iterate through all matches
         List<FileSystemInfo> results = new();
         foreach (string s in foundPaths)
         {
             // Trim single- or double-quotation marks, if any
             string path = s.Trim('"').Trim('\'');
-            
+
             if (string.IsNullOrWhiteSpace(s)) continue;
 
             try
@@ -54,8 +54,17 @@ internal static class Utils
                 DirectoryInfo di = new(path);
 
                 // If the file or directory matches our requirements, add it to the results
-                if (fi.Exists || !mustExist) results.Add(fi);
+                if (fi.Exists) results.Add(fi);
                 else if (canBeDirectory && di.Exists) results.Add(di);
+                else if (!mustExist)
+                {
+                    // If neither exists, but we don't care, we need to decide whether to return fi or di.
+                    // For now, let's stick to fi unless it ends with a directory separator.
+                    if (canBeDirectory && (path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)))
+                        results.Add(di);
+                    else
+                        results.Add(fi);
+                }
             }
             catch (Exception ex)
             {
@@ -72,7 +81,7 @@ internal static class Utils
     {
         if (startOnNewLine) Console.WriteLine();
         else Console.Write(' ');
-        
+
         Console.WriteLine("Press ENTER to continue...");
         Console.ReadLine();
     }
@@ -89,7 +98,7 @@ internal static class Utils
             Console.ForegroundColor = origForeground;
             Console.WriteLine($"\t{entry.Description}");
         }
-        
+
         PromptForEnterKey();
     }
 }

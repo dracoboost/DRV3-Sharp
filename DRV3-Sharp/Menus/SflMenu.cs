@@ -18,7 +18,8 @@ internal sealed class SflMenu : IMenu
         new("SFL to JSON", "Convert SFL file(s) to JSON format for editing.", ToJson),
         new("(Unfinished) JSON to SFL", "Experimental! Convert JSON file(s) to SFL format for use in the game.", ToSfl),
         new("Help", "View descriptions of currently-available operations.", Help),
-        new("Back", "Return to the previous menu.", Program.PopMenu)
+        new("Back", "Return to the previous menu.", Program.PopMenu),
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
 
     private static void ToJson()
@@ -38,7 +39,7 @@ internal sealed class SflMenu : IMenu
                 foreach (var file in contents)
                 {
                     using FileStream fs = new(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    
+
                     SflData output;
                     try
                     {
@@ -48,14 +49,14 @@ internal sealed class SflMenu : IMenu
                     {
                         continue;
                     }
-                
+
                     loadedData.Add((file.FullName, output));
                 }
             }
             else if (info is FileInfo)
             {
                 using FileStream fs = new(info.FullName, FileMode.Open, FileAccess.Read, FileShare.Read);
-                
+
                 SflData output;
                 try
                 {
@@ -65,11 +66,11 @@ internal sealed class SflMenu : IMenu
                 {
                     continue;
                 }
-                
+
                 loadedData.Add((info.FullName, output));
             }
         }
-        
+
         // Print an error if we didn't actually find any valid SFL data from the provided paths.
         if (loadedData.Count == 0)
         {
@@ -77,8 +78,8 @@ internal sealed class SflMenu : IMenu
             Utils.PromptForEnterKey();
             return;
         }
-        
-        
+
+
         JsonSerializerOptions options = new()
         {
             WriteIndented = true,
@@ -94,14 +95,14 @@ internal sealed class SflMenu : IMenu
             writer.Flush();
             writer.Dispose();
         }
-        
+
         Console.Write($"Converted {loadedData.Count} SFL file(s) to JSON.");
         Utils.PromptForEnterKey(false);
     }
-    
+
     private static void ToSfl()
     {
-        
+
     }
 
     private void Help()

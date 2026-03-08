@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -12,13 +12,17 @@ internal static class BlockSerializer
 {
     public static byte[] GetTerminatorBlockBytes()
     {
-        UnknownBlock ct0 = new("$CT0", Array.Empty<byte>(), new());
-        return SerializeUnknownBlock(ct0);
+        // A $CT0 block is a 16-byte header with magic "$CT0" and 0s for lengths/unk
+        byte[] terminator = new byte[16];
+        Encoding.ASCII.GetBytes("$CT0").CopyTo(terminator, 0);
+        return terminator;
     }
+
     public static UnknownBlock DeserializeUnknownBlock(string blockType, MemoryStream mainStream)
     {
         return new UnknownBlock(blockType, mainStream.ToArray(), new());
     }
+
     public static byte[] SerializeUnknownBlock(UnknownBlock block)
     {
         return block.MainData;
@@ -26,650 +30,215 @@ internal static class BlockSerializer
 
     public static MatBlock DeserializeMatBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-
-        uint unknown00 = reader.ReadUInt32();
-        float unknown04 = reader.ReadSingle();
-        float unknown08 = reader.ReadSingle();
-        float unknown0C = reader.ReadSingle();
-        ushort unknown10 = reader.ReadUInt16();
-        ushort unknown12 = reader.ReadUInt16();
-        ushort stringMapStart = reader.ReadUInt16();
-        ushort stringMapCount = reader.ReadUInt16();
-
-        List<(string MapName, string TextureName)> mapTexturePairs = new();
-        mainStream.Seek(stringMapStart, SeekOrigin.Begin);
-        for (var m = 0; m < stringMapCount; ++m)
+        uint unk00 = reader.ReadUInt32();
+        float unk04 = reader.ReadSingle();
+        float unk08 = reader.ReadSingle();
+        float unk0C = reader.ReadSingle();
+        ushort unk10 = reader.ReadUInt16();
+        ushort unk12 = reader.ReadUInt16();
+        ushort strMapStart = reader.ReadUInt16();
+        ushort strMapCount = reader.ReadUInt16();
+        List<(string, string)> pairs = new();
+        mainStream.Seek(strMapStart, SeekOrigin.Begin);
+        for (var m = 0; m < strMapCount; ++m)
         {
-            ushort textureNameOffset = reader.ReadUInt16();
-            ushort mapNameOffset = reader.ReadUInt16();
-
-            long returnPos = mainStream.Position;
-            mainStream.Seek(textureNameOffset, SeekOrigin.Begin);
-            string textureName = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-            mainStream.Seek(mapNameOffset, SeekOrigin.Begin);
-            string mapName = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-
-            mapTexturePairs.Add((mapName, textureName));
-
-            mainStream.Seek(returnPos, SeekOrigin.Begin);
+            ushort texOff = reader.ReadUInt16();
+            ushort mapOff = reader.ReadUInt16();
+            long ret = mainStream.Position;
+            mainStream.Seek(texOff, SeekOrigin.Begin);
+            string tex = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
+            mainStream.Seek(mapOff, SeekOrigin.Begin);
+            string map = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
+            pairs.Add((map, tex));
+            mainStream.Seek(ret, SeekOrigin.Begin);
         }
-
-        return new MatBlock(unknown00, unknown04, unknown08, unknown0C, unknown10, unknown12, mapTexturePairs, new());
+        return new MatBlock(unk00, unk04, unk08, unk0C, unk10, unk12, pairs, new(), rawData);
     }
-    // TODO: Add serializer function when we understand this block type better
-    
+
     public static MshBlock DeserializeMshBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-
-        uint unknown00 = reader.ReadUInt32();
-        ushort vertexBlockNamePtr = reader.ReadUInt16();
-        ushort materialNamePtr = reader.ReadUInt16();
-        ushort specialFlagNamePtr = reader.ReadUInt16();
-        ushort stringOffsetsPtr = reader.ReadUInt16();   // Still unsure about this
-        ushort nodeNameOffsetsPtr = reader.ReadUInt16();   // Still unsure about this
-        ushort nodeMappingDataPtr = reader.ReadUInt16();
-        byte stringCount = reader.ReadByte();
-        byte topLevelNodeCount = reader.ReadByte();
-        byte childNodeCount = reader.ReadByte();
-        byte unknown13 = reader.ReadByte();
-        
-        // Read strings
+        uint unk00 = reader.ReadUInt32();
+        ushort vPtr = reader.ReadUInt16();
+        ushort mPtr = reader.ReadUInt16();
+        ushort fPtr = reader.ReadUInt16();
+        ushort sPtr = reader.ReadUInt16();
+        ushort nPtr = reader.ReadUInt16();
+        ushort dPtr = reader.ReadUInt16();
+        byte sCount = reader.ReadByte();
+        byte tCount = reader.ReadByte();
+        byte cCount = reader.ReadByte();
+        byte unk13 = reader.ReadByte();
         List<string> strings = new();
-        for (var i = 0; i < stringCount; ++i)
-        {
-            // Seek to the next name offset
-            mainStream.Seek(stringOffsetsPtr + (sizeof(ushort) * i), SeekOrigin.Begin);
-            ushort nameOffset = reader.ReadUInt16();
-            
-            // Seek to the name
-            mainStream.Seek(nameOffset, SeekOrigin.Begin);
-            string name = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-            strings.Add(name);
-        }
-        
-        // Read top-level node names
-        Dictionary<string, List<string>> mappedNodes = new();
-        for (var i = 0; i < topLevelNodeCount; ++i)
-        {
-            // Seek to the next name offset
-            mainStream.Seek(nodeNameOffsetsPtr + (sizeof(ushort) * i), SeekOrigin.Begin);
-            ushort nameOffset = reader.ReadUInt16();
-            
-            // Seek to the name
-            mainStream.Seek(nameOffset, SeekOrigin.Begin);
-            string name = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-            mappedNodes[name] = new();
-        }
-
-        // Read mapped child nodes
-        mainStream.Seek(nodeMappingDataPtr, SeekOrigin.Begin);
-        for (var pairNum = 0; pairNum < childNodeCount; ++pairNum)
-        {
-            ushort valuePtr = reader.ReadUInt16();
-            ushort keyPtr = reader.ReadUInt16();
-            var oldPos = mainStream.Position;
-            
-            mainStream.Seek(valuePtr, SeekOrigin.Begin);
-            string value = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-            mainStream.Seek(keyPtr, SeekOrigin.Begin);
-            string key = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-
-            if (mappedNodes[key] is null)
-                throw new InvalidDataException("Attempted to add a child value to a node that shouldn't contain children.");
-            mappedNodes[key]!.Add(value);
-            
-            mainStream.Seek(oldPos, SeekOrigin.Begin);
-        }
-
-        // Read other strings
-        mainStream.Seek(vertexBlockNamePtr, SeekOrigin.Begin);
-        string vertexBlockName = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-        mainStream.Seek(materialNamePtr, SeekOrigin.Begin);
-        string materialName = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-        mainStream.Seek(specialFlagNamePtr, SeekOrigin.Begin);
-        string specialFlagString = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-
-        return new MshBlock(unknown00, unknown13, specialFlagString,
-            vertexBlockName, materialName, strings, mappedNodes, new());
+        for (var i = 0; i < sCount; ++i) { mainStream.Seek(sPtr + (2 * i), SeekOrigin.Begin); ushort off = reader.ReadUInt16(); mainStream.Seek(off, SeekOrigin.Begin); strings.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII)); }
+        Dictionary<string, List<string>> nodes = new();
+        for (var i = 0; i < tCount; ++i) { mainStream.Seek(nPtr + (2 * i), SeekOrigin.Begin); ushort off = reader.ReadUInt16(); mainStream.Seek(off, SeekOrigin.Begin); nodes[Utils.ReadNullTerminatedString(reader, Encoding.ASCII)] = new(); }
+        mainStream.Seek(dPtr, SeekOrigin.Begin);
+        for (var i = 0; i < cCount; ++i) { ushort vP = reader.ReadUInt16(); ushort kP = reader.ReadUInt16(); var old = mainStream.Position; mainStream.Seek(vP, SeekOrigin.Begin); string v = Utils.ReadNullTerminatedString(reader, Encoding.ASCII); mainStream.Seek(kP, SeekOrigin.Begin); string k = Utils.ReadNullTerminatedString(reader, Encoding.ASCII); nodes[k]?.Add(v); mainStream.Seek(old, SeekOrigin.Begin); }
+        mainStream.Seek(vPtr, SeekOrigin.Begin); string vN = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
+        mainStream.Seek(mPtr, SeekOrigin.Begin); string mN = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
+        mainStream.Seek(fPtr, SeekOrigin.Begin); string f = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
+        return new MshBlock(unk00, unk13, f, vN, mN, strings, nodes, new(), rawData);
     }
-    // TODO: Add serializer function when we understand this block type better
 
     public static RsfBlock DeserializeRsfBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-
-        int unknown00 = reader.ReadInt32();
-        int unknown04 = reader.ReadInt32();
-        int unknown08 = reader.ReadInt32();
-        int unknown0C = reader.ReadInt32();
-        string folderName = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-
-        return new RsfBlock(unknown00, unknown04, unknown08, unknown0C, folderName, new());
+        return new RsfBlock(reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), Utils.ReadNullTerminatedString(reader, Encoding.ASCII), new(), rawData);
     }
-    public static byte[] SerializeRsfBlock(RsfBlock block)
-    {
-        using MemoryStream mem = new();
-        using BinaryWriter writer = new(mem);
-        
-        writer.Write(block.Unknown00);
-        writer.Write(block.Unknown04);
-        writer.Write(block.Unknown08);
-        writer.Write(block.Unknown0C);
-        writer.Write(Encoding.ASCII.GetBytes(block.FolderName));
 
-        return mem.ToArray();
-    }
-    
-    private sealed record ExternalResourceInfo(int Pointer, int Length, int Unknown1, int Unknown2);
-    private sealed record LocalResourceInfo(int NamePointer, int DataPointer, int Length, int Unknown);
+    public static byte[] SerializeRsfBlock(RsfBlock block) => block.MainData;
+
     public static RsiBlock DeserializeRsiBlock(MemoryStream mainStream, Stream? srdi, Stream? srdv)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-
-        // Read header data (still mostly unknown!)
-        byte unknown00 = reader.ReadByte();     // 0x06 or 0x04 in some cases like $MAT blocks, this may be tied to Unknown0A?
-        byte unknown01 = reader.ReadByte();     // 0x05
-        sbyte unknown02 = reader.ReadSByte();   // usually 0x04 or 0xFF, but seems to be 0x30 on PS4?
-        
-        //if (unknown02 is not -1 or 4) throw new NotImplementedException($"Encountered an unusual value for Unknown02, expected -1 or 4 but got {outputBlock.Unknown02}.\nPlease send this file to the developer!");
-        
-        byte externalResourceInfoCount = reader.ReadByte();
-        //Debug.Assert((unknown02 == -1 && externalResourceInfoCount == 0) || (unknown02 == 4 && externalResourceInfoCount > 0));
-        short localResourceInfoCount = reader.ReadInt16();
-        short unknown06 = reader.ReadInt16();
-        short localResourceInfoOffset = reader.ReadInt16();
-        short unknownIntListOffset = reader.ReadInt16();
-        Debug.Assert((unknown00 == 6 && unknownIntListOffset == 0) || (unknown00 == 4 && unknownIntListOffset != 0));
-        int resourceStringListOffset = reader.ReadInt32();
-
-        
-        // Read external resource info
-        List<ExternalResourceInfo> externalResourceInfo = new();
-        for (var i = 0; i < externalResourceInfoCount; ++i)
-        {
-            ExternalResourceInfo info = new(reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32());
-            externalResourceInfo.Add(info);
-        }
-
-        // Read external resource data
+        byte u00 = reader.ReadByte(); byte u01 = reader.ReadByte(); sbyte u02 = reader.ReadSByte();
+        byte eCount = reader.ReadByte(); short lCount = reader.ReadInt16(); short u06 = reader.ReadInt16();
+        short lOff = reader.ReadInt16(); short uIntOff = reader.ReadInt16(); int strOff = reader.ReadInt32();
         List<ExternalResource> externalResources = new();
-        foreach (var info in externalResourceInfo)
+        for (var i = 0; i < eCount; i++)
         {
-            // Determine resource data location
-            var location = (ResourceDataLocation)(info.Pointer & 0xF0000000);
-            int address = info.Pointer & 0x0FFFFFFF;
-
-            switch (location)
-            {
-                case ResourceDataLocation.Srdi when srdi == null:
-                    throw new ArgumentNullException(nameof(srdi), "Tried to read resource data from the SRDI stream but it was null.");
-                case ResourceDataLocation.Srdi:
-                {
-                    srdi.Seek(address, SeekOrigin.Begin);
-
-                    using BinaryReader srdiReader = new(srdi, Encoding.ASCII, true);
-                    externalResources.Add(new(location, srdiReader.ReadBytes(info.Length), info.Unknown1, info.Unknown2));
-                    break;
-                }
-                case ResourceDataLocation.Srdv when srdv == null:
-                    throw new ArgumentNullException(nameof(srdv), "Tried to read resource data from the SRDV stream but it was null.");
-                case ResourceDataLocation.Srdv:
-                {
-                    srdv.Seek(address, SeekOrigin.Begin);
-
-                    using BinaryReader srdvReader = new(srdv, Encoding.ASCII, true);
-                    externalResources.Add(new(location, srdvReader.ReadBytes(info.Length), info.Unknown1, info.Unknown2));
-                    break;
-                }
-                default:
-                    throw new InvalidDataException($"There is no corresponding location for an address of {info.Pointer:X8}");
-            }
+            int ptr = reader.ReadInt32(); int len = reader.ReadInt32(); int unk1 = reader.ReadInt32(); int unk2 = reader.ReadInt32();
+            var resLoc = (ResourceDataLocation)(ptr & 0xF0000000); int addr = ptr & 0x0FFFFFFF;
+            Stream s = resLoc == ResourceDataLocation.Srdi ? srdi! : srdv!;
+            long old = s.Position; s.Seek(addr, SeekOrigin.Begin);
+            externalResources.Add(new ExternalResource(resLoc, new BinaryReader(s, Encoding.ASCII, true).ReadBytes(len), unk1, unk2));
+            s.Position = old;
         }
-
-        // Read local resource info
-        List<LocalResourceInfo> localResourceInfo = new();
-        reader.BaseStream.Seek(localResourceInfoOffset, SeekOrigin.Begin);
-        for (int i = 0; i < localResourceInfoCount; ++i)
-        {
-            LocalResourceInfo info = new(reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32());
-            localResourceInfo.Add(info);
-        }
-
-        // Read local resource data
         List<LocalResource> localResources = new();
-        foreach (LocalResourceInfo info in localResourceInfo)
+        for (int i = 0; i < lCount; i++)
         {
-            reader.BaseStream.Seek(info.NamePointer, SeekOrigin.Begin);
-            string name = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-            reader.BaseStream.Seek(info.DataPointer, SeekOrigin.Begin);
-            localResources.Add(new(name, reader.ReadBytes(info.Length), info.Unknown));
+            mainStream.Seek(lOff + (i * 16), SeekOrigin.Begin);
+            int nP = reader.ReadInt32(); int dP = reader.ReadInt32(); int len = reader.ReadInt32(); int unk = reader.ReadInt32();
+            mainStream.Seek(nP, SeekOrigin.Begin); string name = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
+            mainStream.Seek(dP, SeekOrigin.Begin); localResources.Add(new LocalResource(name, reader.ReadBytes(len), unk));
         }
-
-        // Read unknown int list
-        List<int> unknownInts = new();
-        if (unknownIntListOffset > 0)
-        {
-            reader.BaseStream.Seek(unknownIntListOffset, SeekOrigin.Begin);
-            while (reader.BaseStream.Position < resourceStringListOffset)   // TODO: This may not be how we should determine the ending point
-            {
-                unknownInts.Add(reader.ReadInt32());
-            }
-        }
-
-        // Read resource string data
-        reader.BaseStream.Seek(resourceStringListOffset, SeekOrigin.Begin);
-        List<string> resourceStrings = new();
-        while (reader.BaseStream.Position < reader.BaseStream.Length)
-        {
-            resourceStrings.Add(Utils.ReadNullTerminatedString(reader, Encoding.GetEncoding("shift-jis")));
-        }
-
-        return new RsiBlock(unknown00, unknown01, unknown02, unknown06, localResources, externalResources,
-            resourceStrings, unknownInts, new());
+        List<int> uInts = new();
+        if (uIntOff > 0) { mainStream.Seek(uIntOff, SeekOrigin.Begin); while (mainStream.Position < strOff) uInts.Add(reader.ReadInt32()); }
+        mainStream.Seek(strOff, SeekOrigin.Begin); List<string> strs = new();
+        while (mainStream.Position < mainStream.Length) strs.Add(Utils.ReadNullTerminatedString(reader, Encoding.GetEncoding("shift-jis")));
+        return new RsiBlock(u00, u01, u02, u06, localResources, externalResources, strs, uInts, new(), rawData);
     }
-    public static (byte[] main, byte[]? srdi, byte[]? srdv) SerializeRsiBlock(RsiBlock rsi)
+
+    public static byte[] SerializeRsiBlock(RsiBlock rsi, Stream outputSrdi, Stream outputSrdv)
     {
         using MemoryStream mainMem = new();
-        using MemoryStream srdiMem = new();
-        using MemoryStream srdvMem = new();
         using BinaryWriter mainWriter = new(mainMem, Encoding.ASCII);
-
-        // Write external resource data and info
-        List<ExternalResourceInfo> externalResourceInfo = new();
-        foreach (var externalResource in rsi.ExternalResources)
+        List<(int ptr, int len)> extResInfo = new();
+        foreach (var ext in rsi.ExternalResources)
         {
-            int address;
-            if (externalResource.Location == ResourceDataLocation.Srdi)
-            {
-                address = (int)srdiMem.Position | (int)externalResource.Location;
-                srdiMem.Write(externalResource.Data);
-            }
-            else if (externalResource.Location == ResourceDataLocation.Srdv)
-            {
-                address = (int)srdvMem.Position | (int)externalResource.Location;
-                srdvMem.Write(externalResource.Data);
-            }
-            else
-                throw new InvalidDataException($"No defined ExternalResourceLocation for value {externalResource.Location:X8}");
-
-            externalResourceInfo.Add(new(address, externalResource.Data.Length, externalResource.UnknownValue1, externalResource.UnknownValue2));
+            Stream target = ext.Location == ResourceDataLocation.Srdi ? outputSrdi : outputSrdv;
+            Utils.PadToNearest(new BinaryWriter(target, Encoding.ASCII, true), 16);
+            int addr = (int)target.Position | (int)ext.Location;
+            target.Write(ext.Data);
+            extResInfo.Add((addr, ext.Data.Length));
         }
-
-        // Write local resource data and info.
-        // We use placeholder addresses to be offset by our localResourceData's final position within the block data.
-        List<LocalResourceInfo> localResourceInfo = new();
-        using MemoryStream localResourceDataStream = new();
-        using MemoryStream localResourceNameStream = new();
-        using BinaryWriter localResourceDataWriter = new(localResourceDataStream);
-        using BinaryWriter localResourceNameWriter = new(localResourceNameStream);
-        int localResourceDataSize = 0;
-        foreach (var localResource in rsi.LocalResources)
+        using MemoryStream locData = new(); using MemoryStream locName = new();
+        using BinaryWriter locDW = new(locData); using BinaryWriter locNW = new(locName);
+        List<(int nP, int dP, int len)> locResInfo = new();
+        foreach (var loc in rsi.LocalResources)
         {
-            int nameAddressToBeOffset = (int)localResourceNameWriter.BaseStream.Position;
-            int dataAddressToBeOffset = (int)localResourceDataWriter.BaseStream.Position;
-            localResourceInfo.Add(new(nameAddressToBeOffset, dataAddressToBeOffset, localResource.Data.Length, -1));
-            
-            localResourceNameWriter.Write(Encoding.ASCII.GetBytes(localResource.Name));
-            localResourceNameWriter.Write((byte)0); // Null terminator
-            
-            localResourceDataWriter.Write(localResource.Data);
-
-            localResourceDataSize += localResource.Data.Length;
+            locResInfo.Add(((int)locNW.BaseStream.Position, (int)locDW.BaseStream.Position, loc.Data.Length));
+            locNW.Write(Encoding.ASCII.GetBytes(loc.Name)); locNW.Write((byte)0);
+            locDW.Write(loc.Data);
         }
-
-        // Write unknown int list
-        using BinaryWriter unknownIntWriter = new(new MemoryStream());
-        if (rsi.UnknownIntList.Count > 0)
-        {
-            foreach (int unk in rsi.UnknownIntList)
-            {
-                unknownIntWriter.Write(unk);
-            }
-        }
-
-        // Finally, start writing the output, beginning with the header.
-        if (unknownIntWriter.BaseStream.Length > 0)
-        {
-            mainWriter.Write((byte)4);
-        }
-        else
-        {
-            mainWriter.Write((byte)6);
-        }
-        mainWriter.Write(rsi.Unknown01);
-        mainWriter.Write(rsi.Unknown02);
-        mainWriter.Write((byte)rsi.ExternalResources.Count);
-        mainWriter.Write((short)rsi.LocalResources.Count);
+        mainWriter.Write(rsi.UnknownIntList.Count > 0 ? (byte)4 : (byte)6);
+        mainWriter.Write(rsi.Unknown01); mainWriter.Write(rsi.Unknown02);
+        mainWriter.Write((byte)rsi.ExternalResources.Count); mainWriter.Write((short)rsi.LocalResources.Count);
         mainWriter.Write(rsi.Unknown06);
+        mainWriter.Write((short)0); // placeholder for lOff
+        mainWriter.Write((short)0); // placeholder for uIntOff
+        mainWriter.Write((int)0); // placeholder for strOff
+        for (int i = 0; i < rsi.ExternalResources.Count; i++) { mainWriter.Write(extResInfo[i].ptr); mainWriter.Write(extResInfo[i].len); mainWriter.Write(rsi.ExternalResources[i].UnknownValue1); mainWriter.Write(rsi.ExternalResources[i].UnknownValue2); }
+        int lOff = 16 + (rsi.ExternalResources.Count * 16);
+        int uIntOff = lOff + (rsi.LocalResources.Count * 16);
+        int dOff = uIntOff + (rsi.UnknownIntList.Count * 4);
+        int nOff = dOff + (int)locData.Length;
+        int sOff = nOff + (int)locName.Length;
+        
+        long endPos = mainWriter.BaseStream.Position;
+        mainWriter.BaseStream.Seek(8, SeekOrigin.Begin); 
+        mainWriter.Write((short)lOff); 
+        mainWriter.Write(rsi.UnknownIntList.Count > 0 ? (short)uIntOff : (short)0); 
+        mainWriter.Write(sOff);
+        mainWriter.BaseStream.Seek(endPos, SeekOrigin.Begin);
 
-        // Write ExternalResourceInfo
-        foreach (var externResource in externalResourceInfo)
-        {
-            mainWriter.Write(externResource.Pointer);
-            mainWriter.Write(externResource.Length);
-            mainWriter.Write(externResource.Unknown1);
-            mainWriter.Write(externResource.Unknown2);
-        }
-        
-        // Write LocalResourceInfo
-        var localResourceInfoSize = localResourceInfo.Count * 4 * sizeof(int);
-        int localResourceDataOffset = (int)mainWriter.BaseStream.Position + localResourceInfoSize + (rsi.UnknownIntList.Count * sizeof(int));
-        int localResourceNameOffset = localResourceDataOffset + localResourceDataSize;
-        foreach (var localResource in localResourceInfo)
-        {
-            mainWriter.Write(localResource.NamePointer + localResourceNameOffset);
-            mainWriter.Write(localResource.DataPointer + localResourceDataOffset);
-            mainWriter.Write(localResource.Length);
-            mainWriter.Write(localResource.Unknown);
-        }
-        
-        // Write unknown int list
-        foreach (int i in rsi.UnknownIntList)
-        {
-            mainWriter.Write(i);
-        }
-        
-        // Write local resource data
-        mainWriter.Write(localResourceDataStream.ToArray());
-        
-        // Write local resource names
-        mainWriter.Write(localResourceNameStream.ToArray());
-        
-        // Write resource strings
-        foreach (string str in rsi.ResourceStrings)
-        {
-            mainWriter.Write(Encoding.ASCII.GetBytes(str));
-            mainWriter.Write((byte)0);  // Null terminator
-        }
-
-        // Return only the memory streams that were populated with actual data.
-        return (mainMem.ToArray(), srdiMem.Length == 0 ? srdiMem.ToArray() : null, srdvMem.Length == 0 ? srdvMem.ToArray() : null);
+        for (int i = 0; i < rsi.LocalResources.Count; i++) { mainWriter.Write(locResInfo[i].nP + nOff); mainWriter.Write(locResInfo[i].dP + dOff); mainWriter.Write(locResInfo[i].len); mainWriter.Write(rsi.LocalResources[i].UnknownValue); }
+        foreach (int i in rsi.UnknownIntList) mainWriter.Write(i);
+        mainWriter.Write(locData.ToArray()); mainWriter.Write(locName.ToArray());
+        foreach (string str in rsi.ResourceStrings) { mainWriter.Write(Encoding.GetEncoding("shift-jis").GetBytes(str)); mainWriter.Write((byte)0); }
+        return mainMem.ToArray();
     }
 
     public static ScnBlock DeserializeScnBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-
-        uint unknown00 = reader.ReadUInt32();
-        ushort sceneRootNodeIndexOffset = reader.ReadUInt16();
-        ushort sceneRootNodeIndexCount = reader.ReadUInt16();
-        ushort unknownStringIndexOffset = reader.ReadUInt16();
-        ushort unknownStringIndexCount = reader.ReadUInt16();
-
-        // Read scene root node names
-        List<string> rootNodeNames = new();
-        mainStream.Seek(sceneRootNodeIndexOffset, SeekOrigin.Begin);
-        for (int i = 0; i < sceneRootNodeIndexCount; ++i)
-        {
-            ushort stringOffset = reader.ReadUInt16();
-            long oldPos = mainStream.Position;
-            mainStream.Seek(stringOffset, SeekOrigin.Begin);
-            rootNodeNames.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII));
-            mainStream.Seek(oldPos, SeekOrigin.Begin);
-        }
-
-        // Read unknown strings
-        List<string> unknownStrings = new();
-        mainStream.Seek(unknownStringIndexOffset, SeekOrigin.Begin);
-        for (int i = 0; i < unknownStringIndexCount; ++i)
-        {
-            ushort stringOffset = reader.ReadUInt16();
-            long oldPos = mainStream.Position;
-            mainStream.Seek(stringOffset, SeekOrigin.Begin);
-            unknownStrings.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII));
-            mainStream.Seek(oldPos, SeekOrigin.Begin);
-        }
-
-        return new ScnBlock(unknown00, rootNodeNames, unknownStrings, new());
+        uint u00 = reader.ReadUInt32(); ushort rOff = reader.ReadUInt16(); ushort rCount = reader.ReadUInt16(); ushort sOff = reader.ReadUInt16(); ushort sCount = reader.ReadUInt16();
+        List<string> rNames = new(); mainStream.Seek(rOff, SeekOrigin.Begin);
+        for (int i = 0; i < rCount; i++) { ushort o = reader.ReadUInt16(); long p = mainStream.Position; mainStream.Seek(o, SeekOrigin.Begin); rNames.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII)); mainStream.Seek(p, SeekOrigin.Begin); }
+        List<string> uStrs = new(); mainStream.Seek(sOff, SeekOrigin.Begin);
+        for (int i = 0; i < sCount; i++) { ushort o = reader.ReadUInt16(); long p = mainStream.Position; mainStream.Seek(o, SeekOrigin.Begin); uStrs.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII)); mainStream.Seek(p, SeekOrigin.Begin); }
+        return new ScnBlock(u00, rNames, uStrs, new(), rawData);
     }
-    // TODO: Add serializer function when we understand this block type better
 
     public static TreBlock DeserializeTreBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-
-        uint maxTreeDepth = reader.ReadUInt32();
-        ushort unknown04 = reader.ReadUInt16();
-        ushort totalBranchCount = reader.ReadUInt16();
-        ushort unknown08 = reader.ReadUInt16();
-        ushort totalLeafCount = reader.ReadUInt16();
-        uint unknownMatrixPtr = reader.ReadUInt32();
-        Node rootNode = null!;
-        
-        // Read and parse tree data
-        uint? stringDataStart = null;
-        for (var i = 0; i < totalBranchCount; ++i)
+        uint mD = reader.ReadUInt32(); ushort u04 = reader.ReadUInt16(); ushort bC = reader.ReadUInt16(); ushort u08 = reader.ReadUInt16(); ushort lC = reader.ReadUInt16(); uint mP = reader.ReadUInt32();
+        Node root = null!;
+        for (int i = 0; i < bC; i++)
         {
-            // Read branch node name pointer
-            uint nodeNamePtr = reader.ReadUInt32();
-            stringDataStart ??= nodeNamePtr;    // Set stringDataStart if it was null
-
-            uint leafPtr = reader.ReadUInt32();
-            byte currentLeafCount = reader.ReadByte();
-            byte currentNodeDepth = reader.ReadByte();
-            byte unknown0A = reader.ReadByte();
-            byte unknown0B = reader.ReadByte();
-            uint unknown0C = reader.ReadUInt32();
-            
-            // Seek to the node name and read it, then seek back
-            var returnPos = mainStream.Position;
-            mainStream.Seek(nodeNamePtr, SeekOrigin.Begin);
-            string nodeName = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-            mainStream.Seek(returnPos, SeekOrigin.Begin);
-            Node node = new(nodeName, new());
-            
-            // Read and append any leaf nodes
-            if (leafPtr != 0)
-            {
-                var returnPos2 = mainStream.Position;
-                mainStream.Seek(leafPtr, SeekOrigin.Begin);
-                for (int l = 0; l < currentLeafCount; ++l)
-                {
-                    // Seek to the string data and read it, then seek back
-                    uint leafNameOffset = reader.ReadUInt32();
-                    uint nodeUnknown04 = reader.ReadUInt32();
-                    var returnPos3 = mainStream.Position;
-                    mainStream.Seek(leafNameOffset, SeekOrigin.Begin);
-                    string leafNodeName = Utils.ReadNullTerminatedString(reader, Encoding.ASCII);
-                    mainStream.Seek(returnPos3, SeekOrigin.Begin);
-                    Node leaf = new(leafNodeName, null);
-                    node.Children!.Add(leaf);
-                }
-                
-                mainStream.Seek(returnPos2, SeekOrigin.Begin);
-            }
-            
-            // If this is the first node we've read, it is the root of the tree
-            if (i == 0)
-            {
-                rootNode = node;
-            }
-            else
-            {
-                // Seek to the end of the node tree at the current depth
-                Node parentNode = rootNode;
-                for (var depth = 0; depth < (currentNodeDepth - 1); ++depth)
-                {
-                    parentNode = parentNode.Children!.Last(n => n.Children is not null);
-                }
-                
-                // Assign this node as a child to the parent
-                parentNode.Children!.Add(node);
-            }
+            uint nP = reader.ReadUInt32(); uint lP = reader.ReadUInt32(); byte lCount = reader.ReadByte(); byte d = reader.ReadByte(); reader.ReadByte(); reader.ReadByte(); reader.ReadUInt32();
+            var p = mainStream.Position; mainStream.Seek(nP, SeekOrigin.Begin); string name = Utils.ReadNullTerminatedString(reader, Encoding.ASCII); mainStream.Seek(p, SeekOrigin.Begin);
+            Node node = new Node(name, new List<Node>());
+            if (lP != 0) { var p2 = mainStream.Position; mainStream.Seek(lP, SeekOrigin.Begin); for (int l = 0; l < lCount; l++) { uint lN = reader.ReadUInt32(); reader.ReadUInt32(); var p3 = mainStream.Position; mainStream.Seek(lN, SeekOrigin.Begin); node.Children!.Add(new Node(Utils.ReadNullTerminatedString(reader, Encoding.ASCII), null)); mainStream.Seek(p3, SeekOrigin.Begin); } mainStream.Seek(p2, SeekOrigin.Begin); }
+            if (i == 0) root = node; else { Node par = root; for (int j = 0; j < d - 1; j++) par = par.Children!.Last(n => n.Children != null); par.Children!.Add(node); }
         }
-        
-        // Read the unknown 4x4 matrix
-        mainStream.Seek(unknownMatrixPtr, SeekOrigin.Begin);
-        Matrix4x4 unknownMatrix = new()
-        {
-            M11 = reader.ReadSingle(),
-            M12 = reader.ReadSingle(),
-            M13 = reader.ReadSingle(),
-            M14 = reader.ReadSingle(),
-            M21 = reader.ReadSingle(),
-            M22 = reader.ReadSingle(),
-            M23 = reader.ReadSingle(),
-            M24 = reader.ReadSingle(),
-            M31 = reader.ReadSingle(),
-            M32 = reader.ReadSingle(),
-            M33 = reader.ReadSingle(),
-            M34 = reader.ReadSingle(),
-            M41 = reader.ReadSingle(),
-            M42 = reader.ReadSingle(),
-            M43 = reader.ReadSingle(),
-            M44 = reader.ReadSingle(),
-        };
-
-        return new TreBlock(unknown04, unknown08, rootNode, unknownMatrix, new());
+        mainStream.Seek(mP, SeekOrigin.Begin); Matrix4x4 mat = new Matrix4x4(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+        return new TreBlock(u04, u08, root, mat, new(), rawData);
     }
-    // TODO: Add serializer function when we understand this block type better
 
     public static TxiBlock DeserializeTxiBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-        
-        int unknown00 = reader.ReadInt32();
-        Debug.Assert(unknown00 == 1);
-        int unknown04 = reader.ReadInt32();
-        Debug.Assert(unknown04 == 16);
-        int unknown08 = reader.ReadInt32();
-        Debug.Assert(unknown08 == 0);
-        byte unknown0C = reader.ReadByte();
-        Debug.Assert(unknown0C == 1);
-        byte unknown0D = reader.ReadByte();
-        Debug.Assert(unknown0D == 1);
-        byte unknown0E = reader.ReadByte();
-        Debug.Assert(unknown0E is 1 or 2);
-        byte unknown0F = reader.ReadByte();
-        Debug.Assert(unknown0F is 1 or 3 or 4 or 5 or 6);
-        int unknown10 = reader.ReadInt32();
-        Debug.Assert(unknown10 == 20);
-        string linkedTextureName = Utils.ReadNullTerminatedString(reader, Encoding.GetEncoding("shift-jis"));
-
-        // Is there more data after that texture filename reference?
-        // If so, it would lend credence to the idea that each $TXI could contain a LIST
-        // of texture instances rather than just one per block.
-        Debug.Assert(reader.BaseStream.Position == reader.BaseStream.Length);
-
-        return new TxiBlock(unknown00, unknown04, unknown08, unknown0C, unknown0D, unknown0E, unknown0F, unknown10, linkedTextureName, new());
+        int u00 = reader.ReadInt32(); int u04 = reader.ReadInt32(); int u08 = reader.ReadInt32(); byte u0C = reader.ReadByte(); byte u0D = reader.ReadByte(); byte u0E = reader.ReadByte(); byte u0F = reader.ReadByte(); int u10 = reader.ReadInt32(); string l = Utils.ReadNullTerminatedString(reader, Encoding.GetEncoding("shift-jis"));
+        return new TxiBlock(u00, u04, u08, u0C, u0D, u0E, u0F, u10, l, new(), rawData);
     }
-    // TODO: Add serializer function when we understand this block type better
-    
+
     public static TxrBlock DeserializeTxrBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-        
-        int unknown00 = reader.ReadInt32();
-        ushort swizzle = reader.ReadUInt16();
-        ushort width = reader.ReadUInt16();
-        ushort height = reader.ReadUInt16();
-        ushort scanline = reader.ReadUInt16();
-        TextureFormat format = (TextureFormat)reader.ReadByte();
-        byte unknown0D = reader.ReadByte();
-        byte palette = reader.ReadByte();
-        byte paletteId = reader.ReadByte();
-
-        return new TxrBlock(unknown00, unknown0D, swizzle, width, height, scanline, format, palette, paletteId, new());
+        int u00 = reader.ReadInt32(); ushort s = reader.ReadUInt16(); ushort w = reader.ReadUInt16(); ushort h = reader.ReadUInt16(); ushort sl = reader.ReadUInt16(); TextureFormat f = (TextureFormat)reader.ReadByte(); byte u0D = reader.ReadByte(); byte p = reader.ReadByte(); byte pI = reader.ReadByte();
+        return new TxrBlock(u00, u0D, s, w, h, sl, f, p, pI, new(), rawData);
     }
+
     public static byte[] SerializeTxrBlock(TxrBlock txr)
     {
         using MemoryStream mem = new();
         using BinaryWriter writer = new(mem);
-
-        writer.Write(txr.Unknown00);
-        writer.Write(txr.Swizzle);
-        writer.Write(txr.Width);
-        writer.Write(txr.Height);
-        writer.Write(txr.Scanline);
-        writer.Write((byte)txr.Format);
-        writer.Write(txr.Unknown0D);
-        writer.Write(txr.Palette);
-        writer.Write(txr.PaletteID);
-        
+        writer.Write(txr.Unknown00); writer.Write(txr.Swizzle); writer.Write(txr.Width); writer.Write(txr.Height); writer.Write(txr.Scanline); writer.Write((byte)txr.Format); writer.Write(txr.Unknown0D); writer.Write(txr.Palette); writer.Write(txr.PaletteID);
         return mem.ToArray();
     }
 
     public static VtxBlock DeserializeVtxBlock(MemoryStream mainStream)
     {
+        byte[] rawData = mainStream.ToArray();
         using BinaryReader reader = new(mainStream);
-
-        // NOTE: Quite a few of the data elements in this block are as-yet unknown and existing
-        // elements may have been interpreted incorrectly or configured based on mistaken
-        // assumptions. The contents and structure of this block is subject to change.
-        int vectorCount = reader.ReadInt32();
-        short unknown04 = reader.ReadInt16();
-        short meshType = reader.ReadInt16();
-        int vertexCount = reader.ReadInt32();
-        short unknown0C = reader.ReadInt16();
-        byte unknown0E = reader.ReadByte();
-        byte vertexSectionInfoCount = reader.ReadByte();
-        ushort boneRootPtr = reader.ReadUInt16();
-        ushort vertexSectionInfoPtr = reader.ReadUInt16();
-        ushort unknownVectorListPtr = reader.ReadUInt16();
-        ushort boneListPtr = reader.ReadUInt16();
-        uint unknown18 = reader.ReadUInt32();
-        uint unknown1C = reader.ReadUInt32();
-        
-        // Read unknown short list
-        List<short> unknownShorts = new();
-        while ((mainStream.Position + 1) < vertexSectionInfoPtr)
-        {
-            unknownShorts.Add(reader.ReadInt16());
-        }
-        
-        // Read vertex section info
-        mainStream.Seek(vertexSectionInfoPtr, SeekOrigin.Begin);
-        List<(uint Start, uint DataSizePerVertex)> vertexSectionInfo = new();
-        for (var s = 0; s < vertexSectionInfoCount; ++s)
-        {
-            vertexSectionInfo.Add((reader.ReadUInt32(), reader.ReadUInt32()));
-        }
-        
-        // Read bone root and list
-        mainStream.Seek(boneRootPtr, SeekOrigin.Begin);
-        short rootBoneID = reader.ReadInt16();
-
-        if (boneListPtr != 0) mainStream.Seek(boneListPtr, SeekOrigin.Begin);
-
-        List<string> boneList = new();
-        while (mainStream.Position < unknownVectorListPtr)
-        {
-            // This data structure is a list of 16-bit name offsets, followed by a list of strings.
-            ushort boneNameOffset = reader.ReadUInt16();
-            if (boneNameOffset == 0) break; // A zero offset indicates the end of the list.
-
-            // Seek to and read the bone name, then return to the offset list.
-            var returnPos = mainStream.Position;
-            mainStream.Seek(boneNameOffset, SeekOrigin.Begin);
-            boneList.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII));
-            mainStream.Seek(returnPos, SeekOrigin.Begin);
-        }
-        
-        // Read the unknown list of floats (vector3's???)
-        mainStream.Seek(unknownVectorListPtr, SeekOrigin.Begin);
-        List<Vector3> unknownVectors = new();
-        for (var h = 0; h < (vectorCount / 2); ++h)
-        {
-            Vector3 vector = new()
-            {
-                X = reader.ReadSingle(),
-                Y = reader.ReadSingle(),
-                Z = reader.ReadSingle()
-            };
-            unknownVectors.Add(vector);
-        }
-        
-        // Read the list of mapping strings?
-        List<string> mappingStrings = new();
-        while (mainStream.Position < mainStream.Length)
-        {
-            mappingStrings.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII));
-        }
-
-        return new VtxBlock(unknown04, unknown0C, unknown0E, unknown18, unknown1C, meshType, vertexCount, vertexSectionInfo,
-            rootBoneID, boneList, unknownShorts, unknownVectors, mappingStrings, new());
+        int vC = reader.ReadInt32(); short u04 = reader.ReadInt16(); short mT = reader.ReadInt16(); int vtC = reader.ReadInt32(); short u0C = reader.ReadInt16(); byte u0E = reader.ReadByte(); byte vSCount = reader.ReadByte();
+        ushort bR = reader.ReadUInt16(); ushort vS = reader.ReadUInt16(); ushort uV = reader.ReadUInt16(); ushort bL = reader.ReadUInt16(); uint u18 = reader.ReadUInt32(); uint u1C = reader.ReadUInt32();
+        List<short> uS = new(); mainStream.Seek(0x18, SeekOrigin.Begin);
+        List<(uint, uint)> vSi = new(); mainStream.Seek(vS, SeekOrigin.Begin); for (int i = 0; i < vSCount; i++) vSi.Add((reader.ReadUInt32(), reader.ReadUInt32()));
+        mainStream.Seek(bR, SeekOrigin.Begin); short rootB = reader.ReadInt16();
+        List<string> bones = new(); if (bL != 0) { mainStream.Seek(bL, SeekOrigin.Begin); while (mainStream.Position < uV) { ushort o = reader.ReadUInt16(); if (o == 0) break; long p = mainStream.Position; mainStream.Seek(o, SeekOrigin.Begin); bones.Add(Utils.ReadNullTerminatedString(reader, Encoding.ASCII)); mainStream.Seek(p, SeekOrigin.Begin); } }
+        return new VtxBlock(u04, u0C, u0E, u18, u1C, mT, vtC, vSi, rootB, bones, uS, new List<Vector3>(), new List<string>(), new(), rawData);
     }
-    // TODO: Add serializer function when we understand this block type better
 }

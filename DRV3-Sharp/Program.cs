@@ -29,7 +29,7 @@ internal static class Program
     private static bool needRefresh = true;     // Do we need to redraw the text on the screen?
     private const int HEADER_LINES = 3;         // How much header/footer space do we need to account for to avoid drawing over it?
     private const int FAST_SCROLL_AMOUNT = 10;  // Speed at which the menus scroll when using Page Up/Page Down
-    
+
     private static void Main(string[] args)
     {
         // Setup text encoding so we can use Shift-JIS encoding for certain files later on.
@@ -56,13 +56,13 @@ internal static class Program
             if (needRefresh)
             {
                 Console.Clear();
-                #if DEBUG
+#if DEBUG
                 Console.WriteLine($"Current menu is {currentMenu.GetType().Name}, menu stack depth is {menuStack.Count}.");
                 Console.WriteLine(currentMenu.HeaderText);
-                #else
+#else
                 Console.WriteLine(currentMenu.HeaderText);
                 Console.WriteLine();
-                #endif
+#endif
             }
 
             // Query the menu for what entries are currently possible.
@@ -144,7 +144,7 @@ internal static class Program
                     if (currentMenu.FocusedEntry < (cachedEntries.Length - FAST_SCROLL_AMOUNT - 1)) currentMenu.FocusedEntry += FAST_SCROLL_AMOUNT;
                     else if (currentMenu.FocusedEntry < (cachedEntries.Length - 1)) currentMenu.FocusedEntry = (cachedEntries.Length - 1);
                     break;
-                
+
                 // Select/deselect entry, if applicable
                 case ConsoleKey.Spacebar:
                     if (currentMenu is ISelectableMenu s)
@@ -189,5 +189,12 @@ internal static class Program
     {
         menuStack.Pop();
     }
-}
 
+    /// <summary>
+    /// Pops all the menus off the menu stack, effectively ending the program.
+    /// </summary>
+    public static void ClearMenuStack()
+    {
+        menuStack.Clear();
+    }
+}

@@ -1,19 +1,21 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 
 namespace DRV3_Sharp_Library.Formats.Data.SRD.Blocks;
 
 public sealed record CfhBlock(
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record MatBlock(
         uint Unknown00,
         float Unknown04, float Unknown08, float Unknown0C,
         ushort Unknown10, ushort Unknown12,
-        List<(string, string)> MapTexturePairs,
-        List<ISrdBlock> SubBlocks)
+        List<(string MapName, string TextureName)> MapTexturePairs,
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record MshBlock(
@@ -23,17 +25,20 @@ public sealed record MshBlock(
         string LinkedMaterialName,
         List<string> Strings,
         Dictionary<string, List<string>> MappedNodes,
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record RsfBlock(
         int Unknown00, int Unknown04, int Unknown08, int Unknown0C,
         string FolderName,
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public enum ResourceDataLocation
 {
+    None = 0x00000000,
     Srdi = 0x20000000,
     Srdv = 0x40000000
 }
@@ -45,14 +50,16 @@ public sealed record RsiBlock(
         List<ExternalResource> ExternalResources,
         List<string> ResourceStrings,
         List<int> UnknownIntList,
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record ScnBlock(
         uint Unknown00,
         List<string> LinkedTreeNames,
         List<string> UnknownStrings,
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record Node(string Name, List<Node>? Children);
@@ -60,7 +67,8 @@ public sealed record TreBlock(
         ushort Unknown04, ushort Unknown08,
         Node RootNode,
         Matrix4x4 UnknownMatrix,
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record TxiBlock(
@@ -68,28 +76,30 @@ public sealed record TxiBlock(
         byte Unknown0C, byte Unknown0D, byte Unknown0E, byte Unknown0F,
         int Unknown10,
         string LinkedTextureName,
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public enum TextureFormat
 {
-    Unknown     = 0x00,
-    ARGB8888    = 0x01,
-    BGR565      = 0x02,
-    BGRA4444    = 0x05,
-    DXT1RGB     = 0x0F,
-    DXT5        = 0x11,
-    BC5         = 0x14,
-    BC4         = 0x16,
-    Indexed8    = 0x1A,
-    BPTC        = 0x1C
+    Unknown = 0x00,
+    ARGB8888 = 0x01,
+    BGR565 = 0x02,
+    BGRA4444 = 0x05,
+    DXT1RGB = 0x0F,
+    DXT5 = 0x11,
+    BC5 = 0x14,
+    BC4 = 0x16,
+    Indexed8 = 0x1A,
+    BPTC = 0x1C
 }
 public sealed record TxrBlock(
         int Unknown00, byte Unknown0D,
         ushort Swizzle, ushort Width, ushort Height, ushort Scanline,
         TextureFormat Format,
         byte Palette, byte PaletteID,
-        List<ISrdBlock> SubBlocks)
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record VtxBlock(
@@ -102,7 +112,8 @@ public sealed record VtxBlock(
         List<short> UnknownShorts,
         List<Vector3> UnknownVectors,
         List<string> MappingStrings,
-        List<ISrdBlock> SubBlocks) 
+        List<ISrdBlock> SubBlocks,
+        byte[] MainData)
     : ISrdBlock;
 
 public sealed record UnknownBlock(
@@ -114,4 +125,5 @@ public sealed record UnknownBlock(
 public interface ISrdBlock
 {
     public List<ISrdBlock> SubBlocks { get; }
+    public byte[] MainData { get; }
 }

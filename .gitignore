@@ -3,6 +3,11 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# SPC files
+dec/
+partition_data_win_*/
+*.spc
+
 # User-specific files
 *.rsuser
 *.suo

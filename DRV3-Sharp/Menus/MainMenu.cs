@@ -11,7 +11,7 @@ internal sealed class MainMenu : IMenu
         new("Select File Type", "Select which kind of file you wish to work with.", SelectFileType),
         new("Help", "View descriptions of currently-available operations.", Help),
         new("About", "Displays information about DRV3-Sharp.", About),
-        new("Exit", "Exits the program.", Program.PopMenu)
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
     
     public int FocusedEntry { get; set; }

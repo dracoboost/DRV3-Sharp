@@ -27,7 +27,8 @@ internal sealed class SpcDetailedOperationsMenu : ISelectableMenu
         new("Manipulate Files", "Select one or more archived files to manipulate in more detail.", ManipulateFiles),
         new("Save", "Saves the SPC archive to a file. If one does not exist, it will be created.", Save),
         new("Help", "View descriptions of currently-available operations.", Help),
-        new("Back", "Return to the previous menu.", Program.PopMenu)
+        new("Back", "Return to the previous menu.", Program.PopMenu),
+        new("Exit", "Exits the program.", Program.ClearMenuStack)
     };
     
     private void ListFiles()
@@ -86,8 +87,11 @@ internal sealed class SpcDetailedOperationsMenu : ISelectableMenu
 
     private void Save()
     {
-        Console.WriteLine("Compressing data and saving, please wait...");
+        Console.WriteLine("Saving SPC archive, please wait...");
 
+        // Disable automatic compression for now as it may produce corrupted data.
+        // Files will be saved in their uncompressed form (compressionFlag = 1).
+        /*
         for (var i = 0; i < loadedData.Data.Files.Count; ++i)
         {
             var originalFile = loadedData.Data.Files[i];
@@ -100,6 +104,7 @@ internal sealed class SpcDetailedOperationsMenu : ISelectableMenu
                 loadedData.Data.Files[i] = originalFile with { Data = compressedData, IsCompressed = true };
             }
         }
+        */
 
         using FileStream outStream = new(loadedData.Path, FileMode.Create, FileAccess.Write, FileShare.Read);
         SpcSerializer.Serialize(loadedData.Data, outStream);
